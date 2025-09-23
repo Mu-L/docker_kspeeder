@@ -26,4 +26,6 @@ if [ ! -f "$CONFIG_FILE" ]; then
   write_mirrors_config "$CONFIG_FILE"
 fi
 
+export KS_USER_MIRROR_CONFIG="${CONFIG_FILE}"
+
 exec /usr/bin/kspeeder
