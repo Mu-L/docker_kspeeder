@@ -2,7 +2,7 @@
 
 set -ex
 
-VER=0.3.7
+VER=0.5.0
 PWD=`pwd`
 rm -rf dest.tar.gz dest
 mkdir -p dest
