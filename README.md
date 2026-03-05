@@ -53,6 +53,97 @@ docker run -d \
 ```
 更多环境变量（`KSPEEDER_PORT` / `KSPEEDER_ADMIN_PORT` / `KSPEEDER_DATA` / `KS_USER_NODES_CONFIG`）可以在 Compose 或 `docker run` 时追加。
 
+## 端口受限场景：Docker CONNECT 代理模式（5443 写不进 / 443 被占用）
+
+适用场景：
+
+- NAS / 群晖 Docker UI 不能填写 `:5443`（只能填 `https://...` 默认走 443），导致镜像源“写不进/不生效”
+- 宿主机 `:443` 已被其它服务占用，无法让 kspeeder 监听 `:443`
+
+解决思路：
+
+- Docker 的 `registry-mirrors` 目标保持写成 `https://registry.linkease.net`（不带端口，等价 `:443`）
+- 同时把 Docker daemon 的 `HTTP_PROXY/HTTPS_PROXY` 指向 kspeeder 管理端口（默认 `:5003`，支持 CONNECT 隧道）
+- kspeeder 会将 `registry.linkease.net:443` 的 CONNECT 自动转接到本机 kspeeder TLS 端口（默认 `:5443`），从而不依赖宿主机 `:443`，也不要求 UI 支持填写 `:5443`
+
+### 1) docker-compose 部署（只暴露 5003）
+
+```yaml
+services:
+  kspeeder:
+    image: linkease/kspeeder:latest
+    container_name: kspeeder
+    ports:
+      - "5003:5003" # Docker HTTP/HTTPS Proxy 指向这里
+    volumes:
+      - ./kspeeder-data:/kspeeder-data
+      - ./kspeeder-config:/kspeeder-config
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - KSPEEDER_PORT=5443
+      - KSPEEDER_ADMIN_PORT=5003
+      - KSPEEDER_CONFIG=/kspeeder-config
+      - KSPEEDER_DATA=/kspeeder-data
+      - KS_USER_NODES_CONFIG=/kspeeder-config/nodes.yaml
+      # 为空会禁用 CONNECT 代理；建议务必设置
+      - KSPEEDER_PROXY_AUTH=user:pass
+```
+
+### 2) docker run 部署（只暴露 5003）
+
+```bash
+docker run -d \
+  --name kspeeder \
+  -p 5003:5003 \
+  -e TZ=Asia/Shanghai \
+  -e KSPEEDER_PROXY_AUTH="user:pass" \
+  -v "$(pwd)/kspeeder-data:/kspeeder-data" \
+  -v "$(pwd)/kspeeder-config:/kspeeder-config" \
+  --restart unless-stopped \
+  linkease/kspeeder:latest
+```
+
+### 3) Docker daemon 设置（mirror + proxy）
+
+1) `registry-mirrors`（目标直接填，不带端口）：
+
+```json
+{
+  "registry-mirrors": [
+    "https://registry.linkease.net"
+  ]
+}
+```
+
+2) Docker 的 HTTP/HTTPS 代理（必须带认证信息）：
+
+```text
+http://user:pass@<kspeeder-host>:5003
+```
+
+> 注意：镜像拉取请求是由 **dockerd** 发起，代理需要配置在 **Docker daemon/service**（不是只在 `docker compose` 给业务容器加 `HTTP_PROXY`）。
+
+Linux systemd 示例（参考用法）：
+
+1) 创建 `/etc/systemd/system/docker.service.d/proxy.conf`：
+
+```ini
+[Service]
+Environment="HTTP_PROXY=http://user:pass@<kspeeder-host>:5003"
+Environment="HTTPS_PROXY=http://user:pass@<kspeeder-host>:5003"
+Environment="NO_PROXY=127.0.0.1,localhost"
+```
+
+2) 重启 Docker：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+```
+
+更完整说明见：`kspeeder/docs/docker-connect-proxy-mode.md`。
+
 ## 节点与配置
 - `KS_USER_NODES_CONFIG`：默认 `/kspeeder-config/nodes.yaml`，推荐 `docker` + `proxies` + `domainfold` 块联合配置镜像 & proxy 节点。
 - `KS_USER_MIRROR_CONFIG`：兼容旧 `mirrors.yaml` 配置，不建议添加新项；优先写入 `nodes.yaml`。
